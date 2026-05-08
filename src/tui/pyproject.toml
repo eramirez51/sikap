@@ -5,15 +5,16 @@ description = "sikap tui: Textual + Pillow + Kitty graphics frontend"
 requires-python = ">=3.12"
 dependencies = [
     "core",
+    "native",
     "textual>=0.83",
-    "pillow>=10.4",
 ]
 
 [project.scripts]
 sikap-tui = "tui.app:main"
 
 [tool.uv.sources]
-core = { path = "../core", editable = true }
+core   = { path = "../core",   editable = true }
+native = { path = "../native", editable = true }
 
 [dependency-groups]
 dev = [

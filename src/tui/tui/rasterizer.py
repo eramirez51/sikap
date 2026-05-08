@@ -1,36 +1,39 @@
-"""CPU rasterizer: paints candles + axis labels into an RGBA buffer ready
-for Kitty transmission.
+"""Rust-backed rasterizer.
 
-Reads `(bar_spacing, x_offset, price_scale, price_offset)` directly from the
-engine's `XProjection` / `YProjection` — same single source of truth that the
-Rust WGSL shader uses, so CPU and (future) GPU paths cannot drift.
+The whole render path lives in the `native` crate now: background fill,
+candle bodies + wicks, axis labels (via fontdue with the embedded
+JetBrainsMono TTF). Python's only job is to marshal data into the four
+parallel buffers that Rust reads zero-copy.
+
+Both halves still consume the engine's `XProjection` / `YProjection` —
+same single source of truth as the rest of the pipeline.
 """
 
 from __future__ import annotations
 
-from pathlib import Path
+import array
 
-from PIL import Image, ImageDraw, ImageFont
+import native
 
-from core.chart.scene import TextPrim
 from core.engine.pane import EnginePane
 
 
-_BG_COLOR     = (20, 20, 28, 255)
-_BULL_COLOR   = (38, 166, 154, 255)
-_BEAR_COLOR   = (239, 83, 80, 255)
-_BODY_FRAC    = 0.8                                     # body width = 0.8 × bar_spacing
+_BG_COLOR        = (20, 20, 28, 255)
+_BULL_COLOR      = (38, 166, 154, 255)
+_BEAR_COLOR      = (239, 83, 80, 255)
+_GUTTER_SEP      = (60, 60, 70, 255)   # 1px line between candle area + gutter
+_BODY_FRAC       = 0.8                  # body width = 0.8 × bar_spacing
 
-# Co-located with the package; no `tui.fonts` subpackage needed.
-_FONT_PATH = Path(__file__).parent / "fonts" / "JetBrainsMono-Regular.ttf"
+
+def _to_u8_rgba(c: tuple[float, float, float, float]) -> tuple[int, int, int, int]:
+    return (int(c[0] * 255), int(c[1] * 255), int(c[2] * 255), int(c[3] * 255))
 
 
 class Rasterizer:
     def __init__(self, width: int, height: int) -> None:
         self.width  = max(1, width)
         self.height = max(1, height)
-        self.image: Image.Image  = Image.new("RGBA", (self.width, self.height), _BG_COLOR)
-        self._font_cache: dict[int, ImageFont.FreeTypeFont] = {}
+        self._native = native.Rasterizer(self.width, self.height)
 
     def resize(self, width: int, height: int) -> None:
         width  = max(1, width)
@@ -38,45 +41,47 @@ class Rasterizer:
         if (width, height) == (self.width, self.height):
             return
         self.width, self.height = width, height
-        self.image = Image.new("RGBA", (width, height), _BG_COLOR)
+        self._native.resize(width, height)
 
     def render(self, pane: EnginePane) -> bytes:
-        # Background
-        draw = ImageDraw.Draw(self.image, "RGBA")
-        draw.rectangle([0, 0, self.width - 1, self.height - 1], fill=_BG_COLOR)
-
         x_proj = pane.time.projection()
         y_proj = pane.price.projection()
 
-        for i, c in enumerate(pane.candles):
-            cx = i * x_proj.bar_spacing + x_proj.x_offset
-            body_w = pane.time.bar_width * _BODY_FRAC
+        # Parallel float arrays — array.array('d', …) exposes the buffer
+        # protocol so PyO3 reads them zero-copy as &[f64] on the Rust side.
+        opens  = array.array("d", (c.open  for c in pane.candles))
+        highs  = array.array("d", (c.high  for c in pane.candles))
+        lows   = array.array("d", (c.low   for c in pane.candles))
+        closes = array.array("d", (c.close for c in pane.candles))
 
-            up    = c.close >= c.open
-            color = _BULL_COLOR if up else _BEAR_COLOR
+        # Pane axes describe the candle area, not the full buffer. Labels
+        # are positioned at `pane_inner_{width,height} + inset`, so passing
+        # the pane's own dimensions lands them inside the gutters of the
+        # rasterizer buffer (where there are no candles).
+        labels = [
+            (tp.text, tp.x, tp.y, tp.size_px, _to_u8_rgba(tp.color))
+            for tp in pane.price.labels(pane.time.width)
+        ] + [
+            (tp.text, tp.x, tp.y, tp.size_px, _to_u8_rgba(tp.color))
+            for tp in pane.time.labels(pane.candles, pane.price.height)
+        ]
 
-            body_top    = c.open  * y_proj.price_scale + y_proj.price_offset
-            body_bottom = c.close * y_proj.price_scale + y_proj.price_offset
-            wick_top    = c.high  * y_proj.price_scale + y_proj.price_offset
-            wick_bottom = c.low   * y_proj.price_scale + y_proj.price_offset
-
-            top, bot = sorted((body_top, body_bottom))
-            draw.rectangle([cx - body_w / 2, top, cx + body_w / 2, bot], fill=color)
-            draw.line([(cx, wick_top), (cx, wick_bottom)], fill=color, width=1)
-
-        # Axis labels — engine emits TextPrims, we just place them.
-        for tp in pane.price.labels(self.width):
-            self._draw_text(draw, tp)
-        for tp in pane.time.labels(pane.candles, self.height):
-            self._draw_text(draw, tp)
-
-        return self.image.tobytes()
-
-    def _draw_text(self, draw: ImageDraw.ImageDraw, tp: TextPrim) -> None:
-        size = max(1, int(tp.size_px))
-        font = self._font_cache.get(size)
-        if font is None:
-            font = ImageFont.truetype(str(_FONT_PATH), size)
-            self._font_cache[size] = font
-        rgba = tuple(int(c * 255) for c in tp.color)
-        draw.text((tp.x, tp.y), tp.text, fill=rgba, font=font)
+        return self._native.render(
+            bg           = _BG_COLOR,
+            bull         = _BULL_COLOR,
+            bear         = _BEAR_COLOR,
+            gutter_sep   = _GUTTER_SEP,
+            body_frac    = _BODY_FRAC,
+            bar_width    = pane.time.bar_width,
+            bar_spacing  = x_proj.bar_spacing,
+            x_offset     = x_proj.x_offset,
+            price_scale  = y_proj.price_scale,
+            price_offset = y_proj.price_offset,
+            chart_w      = int(pane.time.width),
+            chart_h      = int(pane.price.height),
+            opens        = opens,
+            highs        = highs,
+            lows         = lows,
+            closes       = closes,
+            labels       = labels,
+        )

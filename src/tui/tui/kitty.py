@@ -1,17 +1,15 @@
-"""Kitty graphics protocol encoder. Transmits RGBA images as zlib+base64
-chunks wrapped in APC sequences.
+"""Kitty graphics protocol — thin Python wrapper around the native encoder.
 
-Spec: https://sw.kovidgoyal.net/kitty/graphics-protocol/
+The whole zlib + base64 + chunked-APC pipeline lives in `native::encode_image`
+now; this file is just the small ergonomic surface (a class with a writer
+arg + the two delete helpers).
 """
 
 from __future__ import annotations
 
-import base64
-import zlib
 from typing import IO
 
-
-CHUNK_SIZE = 4096
+import native
 
 
 class KittyEncoder:
@@ -28,33 +26,16 @@ class KittyEncoder:
         rows:    int,
     ) -> None:
         """Write a single image to `out`. Caller positions the cursor first."""
-        compressed = zlib.compress(rgba, level=1)        # ~Compression::fast()
-        encoded    = base64.b64encode(compressed)
-        n_chunks   = (len(encoded) + CHUNK_SIZE - 1) // CHUNK_SIZE
-
-        for i, start in enumerate(range(0, len(encoded), CHUNK_SIZE)):
-            chunk = encoded[start : start + CHUNK_SIZE]
-            more  = 1 if i + 1 < n_chunks else 0
-            if i == 0:
-                header = (
-                    f"\x1b_Gf=32,s={width},v={height},a=T,t=d,"
-                    f"i={image_id},o=z,c={cols},r={rows},q=2,m={more};"
-                ).encode()
-            else:
-                header = f"\x1b_Gm={more};".encode()
-            out.write(header)
-            out.write(chunk)
-            out.write(b"\x1b\\")
+        payload = native.encode_image(rgba, width, height, image_id, cols, rows)
+        out.write(payload)
         out.flush()
 
 
 def delete_image(out: IO[bytes], image_id: int) -> None:
-    """Delete a previously transmitted image by ID."""
-    out.write(f"\x1b_Ga=d,d=I,i={image_id};\x1b\\".encode())
+    out.write(native.delete_image_seq(image_id))
     out.flush()
 
 
 def delete_all_images(out: IO[bytes]) -> None:
-    """Purge every Kitty image from the terminal's cache."""
-    out.write(b"\x1b_Ga=d,d=a;\x1b\\")
+    out.write(native.delete_all_images_seq())
     out.flush()

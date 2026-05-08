@@ -12,6 +12,7 @@ import argparse
 import sys
 from pathlib import Path
 
+from textual import events
 from textual.app import App, ComposeResult
 from textual.widgets import Footer, Header
 
@@ -24,8 +25,22 @@ from tui.kitty import KittyEncoder, delete_all_images
 from tui.rasterizer import Rasterizer
 
 
-_IMAGE_ID = 1
-_PURGE_EVERY = 100
+_IMAGE_ID       = 1
+_PURGE_EVERY    = 100
+# Multiplicative wheel zoom: each notch scales bar_width by this factor.
+# 1.1 ≈ 10% per notch — feels natural across the bar_width [2, 64] range.
+_ZOOM_FACTOR    = 1.1
+# Render at 1/RENDER_DIVISOR of the terminal pixel resolution. Kitty scales
+# the image up to fill the chart cells. Matches huge-td's app-tui
+# (chart_view.rs uses /3) — at native resolution Pillow's pure-Python
+# rasterizer can't keep up with a drag.
+_RENDER_DIVISOR = 3
+_TICK_HZ        = 30.0          # render loop frequency for dirty flag
+# Reserve space inside the rasterizer buffer for axis labels. The candle
+# drawing area is the buffer minus these gutters; price labels sit in the
+# right gutter, time labels in the bottom gutter.
+_PRICE_GUTTER_PX = 56
+_TIME_GUTTER_PX  = 20
 
 
 class SikapApp(App):
@@ -47,12 +62,28 @@ class SikapApp(App):
         self._tf           = tf
         self._engine       = AppEngine(parquet_path.parent)
         self._engine.open(symbol, tf, range_from=0, range_to=2**63 - 1)
+        # Seek cursor to the end of the data so the chart preloads with all
+        # candles instead of just the first bar (replay starts at the end).
+        self._engine.session.seek(2**63 - 1)
         self._pane_id      = self._engine.add_pane(symbol, tf, width=1.0, height=1.0)
         self._rasterizer   = Rasterizer(1, 1)
         self._kitty        = KittyEncoder()
         self._cell_w, self._cell_h = detect_cell_size()
         self._frame_count  = 0
-        self._last_region  = None        # so we re-render after first layout
+        self._last_region  = None        # detect first/changed layout
+        self._initial_fit_done = False   # refit price on first real geometry
+        # Drag-pan anchor in screen cells (None = not dragging).
+        self._drag_anchor: tuple[int, int] | None = None
+        # Chart-pixels per terminal cell; recomputed on geometry change.
+        # These convert mouse-cell deltas to engine pixel coords.
+        self._px_per_cell_x = self._cell_w / _RENDER_DIVISOR
+        self._px_per_cell_y = self._cell_h / _RENDER_DIVISOR
+        # Dirty flag: mouse handlers set this; the render loop drains it.
+        # Decouples input rate (60–120 Hz) from render rate (30 Hz).
+        self._dirty = False
+        # Textual replaces sys.stdout with a print-capture; write Kitty escapes
+        # directly to the TTY to bypass it.
+        self._tty = open("/dev/tty", "wb", buffering=0)
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -60,66 +91,133 @@ class SikapApp(App):
         yield Footer()
 
     def on_mount(self) -> None:
-        # Force one render after the first layout completes.
-        self.set_interval(0.1, self._tick_render)
+        self.set_interval(1.0 / _TICK_HZ, self._tick_render)
 
     def _tick_render(self) -> None:
         chart = self.query_one("#chart", ChartWidget)
         region = chart.region
         if region.width <= 0 or region.height <= 0:
             return
-        # Skip when nothing has changed.
         rkey = (region.x, region.y, region.width, region.height)
-        if rkey == self._last_region:
+        if rkey != self._last_region:
+            self._last_region = rkey
+            self._on_geometry_changed(region)
             return
-        self._last_region = rkey
+        if self._dirty:
+            self._dirty = False
+            self._render_chart(region)
+
+    # ── Geometry / data lifecycle ────────────────────────────────
+
+    def _on_geometry_changed(self, region) -> None:
+        """Layout/size changed. Resize axes geometrically; preserve pan/zoom
+        state. On first real geometry, also refit price (we can't fit
+        before we know the size)."""
+        chart_pixel_w = max(1, (region.width  * self._cell_w) // _RENDER_DIVISOR)
+        chart_pixel_h = max(1, (region.height * self._cell_h) // _RENDER_DIVISOR)
+        # Mouse-cell → engine-pixel scale (so a 1-cell drag pans the same
+        # amount regardless of render resolution).
+        self._px_per_cell_x = chart_pixel_w / max(1, region.width)
+        self._px_per_cell_y = chart_pixel_h / max(1, region.height)
+        pane = self._engine.pane(self._pane_id)
+        if pane is None:
+            return
+        # Pane axes describe the candle drawing area, not the buffer; the
+        # right/bottom gutters hold the axis labels.
+        pane.time.resize(max(1, chart_pixel_w - _PRICE_GUTTER_PX))
+        pane.price.resize(max(1, chart_pixel_h - _TIME_GUTTER_PX))
+        if not self._initial_fit_done:
+            bars = self._engine.session.bars(self._symbol, self._tf)
+            pane.rebuild(bars)
+            self._initial_fit_done = True
         self._render_chart(region)
 
     # ── Actions ──────────────────────────────────────────────────
 
     def action_step(self, direction: int) -> None:
+        # AppEngine.step() rebuilds panes internally — no extra rebuild needed.
         self._engine.step(direction)
-        chart = self.query_one("#chart", ChartWidget)
-        self._render_chart(chart.region)
+        self._dirty = True
 
     def action_fit(self) -> None:
         pane = self._engine.pane(self._pane_id)
         if pane is None:
             return
-        # Re-fit by rebuilding from session bars (resets base_index + price).
         bars = self._engine.session.bars(self._symbol, self._tf)
         pane.rebuild(bars)
+        self._dirty = True
+
+    # ── Mouse: drag-pan + wheel-zoom ─────────────────────────────
+
+    def on_mouse_down(self, event: events.MouseDown) -> None:
+        if event.button != 1:
+            return
         chart = self.query_one("#chart", ChartWidget)
-        self._render_chart(chart.region)
+        if not chart.region.contains(event.x, event.y):
+            return
+        self._drag_anchor = (event.x, event.y)
+        event.stop()
+
+    def on_mouse_move(self, event: events.MouseMove) -> None:
+        if self._drag_anchor is None:
+            return
+        last_x, last_y = self._drag_anchor
+        dx_cells = event.x - last_x
+        dy_cells = event.y - last_y
+        if dx_cells == 0 and dy_cells == 0:
+            return
+        pane = self._engine.pane(self._pane_id)
+        if pane is None:
+            return
+        if dx_cells != 0:
+            pane.pan_time_by_px(dx_cells * self._px_per_cell_x)
+        if dy_cells != 0:
+            pane.pan_price_by_px(dy_cells * self._px_per_cell_y)
+        self._drag_anchor = (event.x, event.y)
+        self._dirty = True
+
+    def on_mouse_up(self, event: events.MouseUp) -> None:
+        if event.button == 1:
+            self._drag_anchor = None
+
+    def on_mouse_scroll_up(self, event: events.MouseScrollUp) -> None:
+        self._zoom(_ZOOM_FACTOR)
+
+    def on_mouse_scroll_down(self, event: events.MouseScrollDown) -> None:
+        self._zoom(1.0 / _ZOOM_FACTOR)
+
+    def _zoom(self, factor: float) -> None:
+        """Multiplicative zoom. Each notch scales bar_width by `factor`,
+        giving consistent perceptual steps across the [2, 64] range."""
+        pane = self._engine.pane(self._pane_id)
+        if pane is None:
+            return
+        delta = pane.time.bar_width * (factor - 1.0)
+        if pane.zoom_by(delta):
+            self._dirty = True
 
     # ── Render ───────────────────────────────────────────────────
 
     def _render_chart(self, region) -> None:
-        chart_pixel_w = max(1, region.width  * self._cell_w)
-        chart_pixel_h = max(1, region.height * self._cell_h)
-
+        """Paint the current pane state. No engine state mutation."""
+        chart_pixel_w = max(1, (region.width  * self._cell_w) // _RENDER_DIVISOR)
+        chart_pixel_h = max(1, (region.height * self._cell_h) // _RENDER_DIVISOR)
         pane = self._engine.pane(self._pane_id)
         if pane is None:
             return
-        pane.resize(chart_pixel_w, chart_pixel_h)
-        # Re-fit price axis to the (possibly new) viewport.
-        bars = self._engine.session.bars(self._symbol, self._tf)
-        pane.rebuild(bars)
-
         self._rasterizer.resize(chart_pixel_w, chart_pixel_h)
         rgba = self._rasterizer.render(pane)
 
-        out = sys.stdout.buffer
-        # Move cursor to chart cell origin (1-based for ANSI).
-        out.write(f"\x1b[{region.y + 1};{region.x + 1}H".encode())
+        # Move cursor to chart cell origin (1-based for ANSI), then transmit.
+        self._tty.write(f"\x1b[{region.y + 1};{region.x + 1}H".encode())
         self._kitty.transmit_image(
-            out, rgba, chart_pixel_w, chart_pixel_h,
+            self._tty, rgba, chart_pixel_w, chart_pixel_h,
             image_id=_IMAGE_ID, cols=region.width, rows=region.height,
         )
 
         self._frame_count += 1
         if self._frame_count % _PURGE_EVERY == 0:
-            delete_all_images(out)
+            delete_all_images(self._tty)
 
 
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
