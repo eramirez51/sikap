@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import sys
 from dataclasses import dataclass, field
 from typing import Sequence
@@ -47,21 +48,28 @@ class EnginePane:
         if abs(new_width - self.time.bar_width) < sys.float_info.epsilon:
             return False
         self.time.bar_width = new_width
-        self._refit_price_to_visible()
+        # No auto-refit: zoom should be a smooth horizontal scale, not a
+        # snap of the price axis. User presses 'f' to fit explicitly.
         return True
 
     def pan_time_by_px(self, px: float) -> bool:
         if abs(px) < 0.5:
             return False
-        bars = round(px / self.time.bar_width)
-        if bars == 0:
-            return False
-        max_idx = max(0, len(self.candles) - 1)
-        new_idx = max(0, min(max_idx, self.time.base_index - bars))
-        if new_idx == self.time.base_index:
+        # Sub-bar resolution: do NOT round to integer bars. base_index is a
+        # float, so the chart slides smoothly with mouse motion.
+        bars = px / self.time.bar_width
+        last_idx  = max(0, len(self.candles) - 1)
+        # Allow over-pan to the right (drag-left direction) so empty space
+        # appears past the last candle. Cap at half a viewport so the
+        # chart can't disappear off the left.
+        visible = max(1, math.ceil(self.time.width / self.time.bar_width)) \
+                  if self.time.bar_width > 0 else 1
+        max_idx   = last_idx + visible // 2
+        new_idx   = max(0.0, min(float(max_idx), self.time.base_index - bars))
+        if abs(new_idx - self.time.base_index) < 1e-6:
             return False
         self.time.base_index = new_idx
-        self._refit_price_to_visible()
+        # No auto-refit: pan is purely a horizontal scroll.
         return True
 
     def pan_price_by_px(self, px: float) -> bool:

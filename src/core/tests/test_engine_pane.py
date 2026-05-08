@@ -33,12 +33,21 @@ def test_zoom_by_clamps():
     assert not pane.zoom_by(1.0)             # already clamped
 
 
-def test_pan_time_clamps_to_candle_range():
+def test_pan_time_clamps_at_first_candle_allows_overpan_past_last():
+    """Drag-right (positive px) clamps at the first candle; drag-left
+    (negative px) is allowed to over-pan up to half a viewport past the
+    last candle so the user can see empty space to the right."""
     pane = EnginePane.new(0, "NQ", Timeframe.M15, 800.0, 400.0)
     candles = [_c(i, 100.0, 101.0, 99.0, 100.0) for i in range(10)]
     pane.rebuild(candles)
     assert pane.time.base_index == 9
+
+    # Drag right: clamp at first candle.
     pane.pan_time_by_px(1000.0)
     assert pane.time.base_index == 0
-    pane.pan_time_by_px(-1000.0)
-    assert pane.time.base_index == 9
+
+    # Drag left far: cap at last_idx + visible/2.
+    # bar_width=8, width=800 → visible = ceil(800/8) = 100 bars
+    # max_idx = 9 + 100 // 2 = 59
+    pane.pan_time_by_px(-10_000.0)
+    assert pane.time.base_index == 59

@@ -28,7 +28,7 @@ class XProjection:
 @dataclass
 class TimeAxis:
     bar_width:  float    # pixels per bar (zoom)
-    base_index: int      # index of rightmost visible bar
+    base_index: float    # index of rightmost visible bar (fractional → smooth pan)
     width:      float    # pane width in pixels
 
     def x_for_bar(self, index: int) -> float:
@@ -45,13 +45,16 @@ class TimeAxis:
 
     def bar_for_x(self, x: float) -> int:
         from_right = int((self.width - x) // self.bar_width)
-        return max(0, self.base_index - from_right)
+        return max(0, int(self.base_index) - from_right)
 
     def visible_range(self) -> tuple[int, int]:
         import math
         visible = math.ceil(self.width / self.bar_width) if self.bar_width > 0 else 1
-        first = max(0, self.base_index - max(visible - 1, 0))
-        return (first, self.base_index)
+        # Ceil so bars partially visible at the right edge (when base_index is
+        # fractional) are included.
+        last  = math.ceil(self.base_index)
+        first = max(0, last - max(visible - 1, 0))
+        return (first, last)
 
     def resize(self, width: float) -> None:
         self.width = width
