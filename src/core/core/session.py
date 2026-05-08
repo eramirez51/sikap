@@ -86,8 +86,8 @@ class Session:
         if not buf:
             return
         last_ts = buf[-1].ts
-        idx = bsearch(buf, self._buffer.replay_ts) or 0
-        progress = idx / len(buf)
+        idx = bsearch(buf, self._buffer.replay_ts)
+        progress = (idx if idx is not None else 0) / len(buf)
         if progress < 0.8 or last_ts >= self._range_to:
             return
 

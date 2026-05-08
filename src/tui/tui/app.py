@@ -19,7 +19,7 @@ from core.candle import Timeframe
 from core.engine import AppEngine
 
 from tui.chart_widget import ChartWidget
-from tui.input import KEYMAP, detect_cell_size
+from tui.input import detect_cell_size
 from tui.kitty import KittyEncoder, delete_all_images
 from tui.rasterizer import Rasterizer
 

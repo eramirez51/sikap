@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from core.candle import Candle, Timeframe
+from core.candle import Timeframe
 from core.engine.events import (
     BarAppended,
     BarRemoved,

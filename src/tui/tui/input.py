@@ -1,4 +1,4 @@
-"""Keymap dispatch + terminal cell-size detection."""
+"""Terminal cell-size detection."""
 
 from __future__ import annotations
 
@@ -6,16 +6,6 @@ import fcntl
 import struct
 import sys
 import termios
-
-
-# Flat keymap for v1 (single-pane MVP). Modal modes (TF entry, draw mode,
-# Ctrl+W chord) land with the features they enable.
-KEYMAP: dict[str, str] = {
-    "right":  "step_forward", "l": "step_forward",
-    "left":   "step_back",    "h": "step_back",
-    "f":      "fit_content",  "r": "fit_content",
-    "q":      "quit",         "ctrl+c": "quit",
-}
 
 
 def detect_cell_size() -> tuple[int, int]:
