@@ -1,28 +1,16 @@
 """Parquet reader. Reads exactly one row group per call (the one for `tf`)
-to avoid loading other timeframes' data."""
+to avoid loading other timeframes' data. The on-disk contract (schema +
+sentinel) lives in `core.parquet_spec` — both reader and writer import
+from there."""
 
 from __future__ import annotations
 
 from pathlib import Path
 
-import pyarrow as pa
 import pyarrow.parquet as pq
 
 from core.candle import Candle, Timeframe, row_group_index
-
-
-SENTINEL_TS: int = -(2**63)   # i64::MIN — empty-TF marker. Reader filters out.
-
-# Schema is defined here so storage and datasmith.write share one source.
-SCHEMA: pa.Schema = pa.schema([
-    pa.field("ts",        pa.int64(),   nullable=False),
-    pa.field("timeframe", pa.string(),  nullable=False),
-    pa.field("open",      pa.float64(), nullable=False),
-    pa.field("high",      pa.float64(), nullable=False),
-    pa.field("low",       pa.float64(), nullable=False),
-    pa.field("close",     pa.float64(), nullable=False),
-    pa.field("volume",    pa.int64(),   nullable=False),
-])
+from core.parquet_spec import SENTINEL_TS
 
 
 def read_candles(

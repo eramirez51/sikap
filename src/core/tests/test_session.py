@@ -2,8 +2,8 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 from core.candle import ALL, Candle, Timeframe
+from core.parquet_spec import SCHEMA, SENTINEL_TS
 from core.session import Session
-from core.storage import SCHEMA, SENTINEL_TS
 
 
 def _write(path, by_tf):

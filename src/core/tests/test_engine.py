@@ -4,7 +4,7 @@ import pyarrow.parquet as pq
 from core.candle import ALL, Candle, Timeframe
 from core.engine import AppEngine, classify_step
 from core.engine.events import BarAppended, BarRemoved, BarUpdated
-from core.storage import SCHEMA, SENTINEL_TS
+from core.parquet_spec import SCHEMA, SENTINEL_TS
 
 
 def _write(path, by_tf):

@@ -11,7 +11,7 @@ import pyarrow.parquet as pq
 from tqdm import tqdm
 
 from core.candle import ALL, Candle, Timeframe
-from core.storage import SCHEMA, SENTINEL_TS
+from core.parquet_spec import SCHEMA, SENTINEL_TS
 
 
 def write_parquet(

@@ -5,7 +5,8 @@ import pyarrow.parquet as pq
 import pytest
 
 from core.candle import ALL, Candle, Timeframe, row_group_index
-from core.storage import SCHEMA, SENTINEL_TS, read_candles
+from core.parquet_spec import SCHEMA, SENTINEL_TS
+from core.storage import read_candles
 
 
 def _write_canonical(path: Path, by_tf: dict[Timeframe, list[Candle]]) -> None:
