@@ -33,9 +33,12 @@ def test_transmit_image_emits_one_chunk_for_small_payload():
 
 
 def test_transmit_image_chunks_large_payload():
+    """Random RGBA bytes don't compress, so a 64 KB payload definitely
+    spans multiple 4096-byte chunks after zlib + base64."""
+    import os
     out = io.BytesIO()
-    rgba = bytes(20_000 * 4)                         # >> 4096 base64 bytes
-    KittyEncoder().transmit_image(out, rgba, 100, 200,
+    rgba = os.urandom(64 * 1024)        # 64 KB random — incompressible
+    KittyEncoder().transmit_image(out, rgba, 128, 128,
                                    image_id=1, cols=10, rows=10)
     data = out.getvalue()
     # Multiple chunks → at least one m=1 followed by a final m=0.

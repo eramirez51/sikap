@@ -11,7 +11,7 @@ import zlib
 from typing import IO
 
 
-CHUNK_SIZE = 256
+CHUNK_SIZE = 4096
 
 
 class KittyEncoder:
