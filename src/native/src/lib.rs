@@ -25,6 +25,17 @@ use pyo3::types::PyBytes;
 
 type Rgba = (u8, u8, u8, u8);
 
+/// The chart's bar↔pixel + price↔pixel transform. Mirrors
+/// `core.chart.viewport.Viewport`; PyO3 reads it from any Python object
+/// that has these four float attributes (the dataclass we ship).
+#[derive(FromPyObject)]
+struct Viewport {
+    bar_spacing:  f32,
+    x_offset:     f32,
+    price_scale:  f32,
+    price_offset: f32,
+}
+
 // ── Embedded font ────────────────────────────────────────────────────
 
 static FONT_BYTES: &[u8] = include_bytes!("../fonts/JetBrainsMono-Regular.ttf");
@@ -79,8 +90,7 @@ impl Rasterizer {
     /// can't bleed under the labels.
     #[pyo3(signature = (
         bg, bull, bear, gutter_sep, body_frac,
-        bar_width, bar_spacing, x_offset,
-        price_scale, price_offset,
+        bar_width, viewport,
         chart_w, chart_h,
         opens, highs, lows, closes,
         labels,
@@ -89,18 +99,15 @@ impl Rasterizer {
     fn render<'py>(
         &mut self,
         py: Python<'py>,
-        bg:           Rgba,
-        bull:         Rgba,
-        bear:         Rgba,
-        gutter_sep:   Rgba,
-        body_frac:    f32,
-        bar_width:    f32,
-        bar_spacing:  f32,
-        x_offset:     f32,
-        price_scale:  f32,
-        price_offset: f32,
-        chart_w:      u32,
-        chart_h:      u32,
+        bg:         Rgba,
+        bull:       Rgba,
+        bear:       Rgba,
+        gutter_sep: Rgba,
+        body_frac:  f32,
+        bar_width:  f32,
+        viewport:   Viewport,
+        chart_w:    u32,
+        chart_h:    u32,
         opens:  &Bound<'py, PyAny>,
         highs:  &Bound<'py, PyAny>,
         lows:   &Bound<'py, PyAny>,
@@ -140,13 +147,13 @@ impl Rasterizer {
             let l = lows[i]   as f32;
             let c = closes[i] as f32;
 
-            let cx    = (i as f32) * bar_spacing + x_offset;
+            let cx    = (i as f32) * viewport.bar_spacing + viewport.x_offset;
             let color = if c >= o { bull } else { bear };
 
-            let body_top    = o * price_scale + price_offset;
-            let body_bottom = c * price_scale + price_offset;
-            let wick_top    = h * price_scale + price_offset;
-            let wick_bottom = l * price_scale + price_offset;
+            let body_top    = o * viewport.price_scale + viewport.price_offset;
+            let body_bottom = c * viewport.price_scale + viewport.price_offset;
+            let wick_top    = h * viewport.price_scale + viewport.price_offset;
+            let wick_bottom = l * viewport.price_scale + viewport.price_offset;
 
             let (b_top, b_bot) = if body_top <= body_bottom {
                 (body_top, body_bottom)

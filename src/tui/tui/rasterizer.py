@@ -44,9 +44,6 @@ class Rasterizer:
         self._native.resize(width, height)
 
     def render(self, pane: EnginePane) -> bytes:
-        x_proj = pane.time.projection()
-        y_proj = pane.price.projection()
-
         # Parallel float arrays — array.array('d', …) exposes the buffer
         # protocol so PyO3 reads them zero-copy as &[f64] on the Rust side.
         opens  = array.array("d", (c.open  for c in pane.candles))
@@ -67,21 +64,18 @@ class Rasterizer:
         ]
 
         return self._native.render(
-            bg           = _BG_COLOR,
-            bull         = _BULL_COLOR,
-            bear         = _BEAR_COLOR,
-            gutter_sep   = _GUTTER_SEP,
-            body_frac    = _BODY_FRAC,
-            bar_width    = pane.time.bar_width,
-            bar_spacing  = x_proj.bar_spacing,
-            x_offset     = x_proj.x_offset,
-            price_scale  = y_proj.price_scale,
-            price_offset = y_proj.price_offset,
-            chart_w      = int(pane.time.width),
-            chart_h      = int(pane.price.height),
-            opens        = opens,
-            highs        = highs,
-            lows         = lows,
-            closes       = closes,
-            labels       = labels,
+            bg         = _BG_COLOR,
+            bull       = _BULL_COLOR,
+            bear       = _BEAR_COLOR,
+            gutter_sep = _GUTTER_SEP,
+            body_frac  = _BODY_FRAC,
+            bar_width  = pane.time.bar_width,
+            viewport   = pane.viewport(),
+            chart_w    = int(pane.time.width),
+            chart_h    = int(pane.price.height),
+            opens      = opens,
+            highs      = highs,
+            lows       = lows,
+            closes     = closes,
+            labels     = labels,
         )

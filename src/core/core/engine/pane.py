@@ -10,6 +10,7 @@ from typing import Sequence
 from core.candle import Candle, Timeframe
 from core.chart.price_axis import PriceAxis
 from core.chart.time_axis import TimeAxis
+from core.chart.viewport import Viewport
 
 
 @dataclass
@@ -30,6 +31,12 @@ class EnginePane:
             price = PriceAxis.new(height),
             candles=[],
         )
+
+    def viewport(self) -> Viewport:
+        """The chart's bar↔pixel + price↔pixel transform packed into one
+        value, ready to hand to the rasterizer."""
+        return Viewport.from_projections(self.time.projection(),
+                                          self.price.projection())
 
     def rebuild(self, candles: Sequence[Candle]) -> None:
         if not candles:
