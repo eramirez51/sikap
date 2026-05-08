@@ -1,0 +1,19 @@
+[package]
+name = "native"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "native"
+crate-type = ["cdylib"]
+
+[dependencies]
+pyo3    = { version = "0.23", features = ["extension-module"] }
+fontdue = "0.9"
+flate2  = "1"
+base64  = "0.22"
+
+[profile.release]
+opt-level     = 3
+lto           = "thin"
+codegen-units = 1

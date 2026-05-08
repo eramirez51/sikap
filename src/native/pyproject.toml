@@ -1,0 +1,13 @@
+[project]
+name = "native"
+version = "0.1.0"
+description = "sikap native: Rust rasterizer for the TUI hot path"
+requires-python = ">=3.12"
+
+[build-system]
+requires = ["maturin>=1.7,<2.0"]
+build-backend = "maturin"
+
+[tool.maturin]
+features = ["pyo3/extension-module"]
+module-name = "native"
