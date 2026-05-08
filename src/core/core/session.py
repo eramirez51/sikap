@@ -5,7 +5,8 @@ from __future__ import annotations
 from pathlib import Path
 
 from core.candle import Candle, Timeframe
-from core.replay import LoadedBars, ReplayBuffer, bsearch
+from core.loaded_bars import LoadedBars
+from core.replay import ReplayBuffer, bsearch
 from core.storage import read_candles
 
 

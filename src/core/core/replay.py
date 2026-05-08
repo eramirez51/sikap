@@ -1,41 +1,18 @@
-"""Replay buffer + lazy candle storage. No I/O — `core.session` handles parquet."""
+"""ReplayBuffer — cursor-bearing replay state machine.
+
+Reads candles from a `LoadedBars` cache, advances a `replay_ts` cursor by
+stepping-TF bars, and exposes `get_bars(tf)` which returns completed bars
+plus a partial "forming" bar when the requested TF is coarser than the
+stepping TF. No I/O — `core.session` handles parquet.
+"""
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Sequence
 
 from core.candle import Candle, Timeframe
-
-
-class LoadedBars:
-    """Loaded candle buffers keyed by (symbol, timeframe). Owns bar storage;
-    does not know about the replay cursor."""
-
-    def __init__(self) -> None:
-        self._inner: dict[str, dict[Timeframe, list[Candle]]] = {}
-
-    def get(self, symbol: str, tf: Timeframe) -> list[Candle] | None:
-        return self._inner.get(symbol, {}).get(tf)
-
-    def is_loaded(self, symbol: str, tf: Timeframe) -> bool:
-        return self.get(symbol, tf) is not None
-
-    def last_ts(self, symbol: str, tf: Timeframe) -> int | None:
-        buf = self.get(symbol, tf)
-        return buf[-1].ts if buf else None
-
-    def loaded_tfs(self, symbol: str) -> list[Timeframe]:
-        return list(self._inner.get(symbol, {}).keys())
-
-    def insert(self, symbol: str, tf: Timeframe, candles: list[Candle]) -> None:
-        self._inner.setdefault(symbol, {})[tf] = candles
-
-    def extend(self, symbol: str, tf: Timeframe, more: list[Candle]) -> None:
-        existing = self._inner.get(symbol, {}).get(tf)
-        if existing is None:
-            return
-        existing.extend(more)
+from core.loaded_bars import LoadedBars  # noqa: F401  (kept for ReplayBuffer's field type)
 
 
 def bsearch(buf: Sequence[Candle], target: int) -> int | None:

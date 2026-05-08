@@ -1,5 +1,6 @@
 from core.candle import Candle, Timeframe
-from core.replay import LoadedBars, ReplayBuffer, aggregate_forming, bsearch
+from core.loaded_bars import LoadedBars
+from core.replay import ReplayBuffer, aggregate_forming, bsearch
 
 
 def _c(ts, close=1.0):
