@@ -30,12 +30,13 @@ _PURGE_EVERY    = 100
 # Multiplicative wheel zoom: each notch scales bar_width by this factor.
 # 1.1 ≈ 10% per notch — feels natural across the bar_width [2, 64] range.
 _ZOOM_FACTOR    = 1.1
-# Render at 1/RENDER_DIVISOR of the terminal pixel resolution. Kitty scales
-# the image up to fill the chart cells. Matches huge-td's app-tui
-# (chart_view.rs uses /3) — at native resolution Pillow's pure-Python
-# rasterizer can't keep up with a drag.
-_RENDER_DIVISOR = 3
-_TICK_HZ        = 30.0          # render loop frequency for dirty flag
+# Render at 1/RENDER_DIVISOR of the terminal pixel resolution. Kitty
+# would otherwise scale a smaller image up to fill the chart cells, which
+# softens lines + axis labels. With the Rust rasterizer we have the
+# headroom to render at native pixel density (=1) and ship sharp output.
+# Bump to 2 or 3 only if you need the FPS on a very large terminal.
+_RENDER_DIVISOR = 1
+_TICK_HZ        = 60.0          # render loop frequency for dirty flag
 # Reserve space inside the rasterizer buffer for axis labels. The candle
 # drawing area is the buffer minus these gutters; price labels sit in the
 # right gutter, time labels in the bottom gutter.
