@@ -9,6 +9,7 @@ If --tf is omitted, defaults to 15m.
 from __future__ import annotations
 
 import argparse
+import math
 import sys
 from pathlib import Path
 
@@ -42,6 +43,9 @@ _TICK_HZ        = 60.0          # render loop frequency for dirty flag
 # right gutter, time labels in the bottom gutter.
 _PRICE_GUTTER_PX = 56
 _TIME_GUTTER_PX  = 20
+# Per-pixel multiplicative factor for axis-drag zoom. ~0.3% per pixel
+# means a 100-pixel drag scales by ~1.35×, which feels right.
+_AXIS_ZOOM_PER_PX = 1.003
 
 
 class SikapApp(App):
@@ -73,8 +77,11 @@ class SikapApp(App):
         self._frame_count  = 0
         self._last_region  = None        # detect first/changed layout
         self._initial_fit_done = False   # refit price on first real geometry
-        # Drag-pan anchor in screen cells (None = not dragging).
+        # Drag state. Anchor is the previous mouse position in screen cells;
+        # mode is one of "pan" (chart area), "price_zoom" (right gutter),
+        # "time_zoom" (bottom gutter). None = not dragging.
         self._drag_anchor: tuple[int, int] | None = None
+        self._drag_mode:   str | None             = None
         # Chart-pixels per terminal cell; recomputed on geometry change.
         # These convert mouse-cell deltas to engine pixel coords.
         self._px_per_cell_x = self._cell_w / _RENDER_DIVISOR
@@ -148,19 +155,37 @@ class SikapApp(App):
         pane.rebuild(bars)
         self._dirty = True
 
-    # ── Mouse: drag-pan + wheel-zoom ─────────────────────────────
+    # ── Mouse: drag-pan + axis-drag zoom + wheel-zoom ────────────
 
     def on_mouse_down(self, event: events.MouseDown) -> None:
         if event.button != 1:
             return
         chart = self.query_one("#chart", ChartWidget)
-        if not chart.region.contains(event.x, event.y):
+        region = chart.region
+        if not region.contains(event.x, event.y):
             return
+
+        # Hit-test gutters in cell coords. Gutters are sized in chart pixels,
+        # so divide by cell size to get cell extents.
+        gutter_cells_x = max(1, math.ceil(_PRICE_GUTTER_PX / self._cell_w))
+        gutter_cells_y = max(1, math.ceil(_TIME_GUTTER_PX  / self._cell_h))
+        local_x = event.x - region.x
+        local_y = event.y - region.y
+        in_right_gutter  = local_x >= region.width  - gutter_cells_x
+        in_bottom_gutter = local_y >= region.height - gutter_cells_y
+
+        if in_right_gutter and not in_bottom_gutter:
+            self._drag_mode = "price_zoom"
+        elif in_bottom_gutter and not in_right_gutter:
+            self._drag_mode = "time_zoom"
+        else:
+            self._drag_mode = "pan"
+
         self._drag_anchor = (event.x, event.y)
         event.stop()
 
     def on_mouse_move(self, event: events.MouseMove) -> None:
-        if self._drag_anchor is None:
+        if self._drag_anchor is None or self._drag_mode is None:
             return
         last_x, last_y = self._drag_anchor
         dx_cells = event.x - last_x
@@ -170,16 +195,35 @@ class SikapApp(App):
         pane = self._engine.pane(self._pane_id)
         if pane is None:
             return
-        if dx_cells != 0:
-            pane.pan_time_by_px(dx_cells * self._px_per_cell_x)
-        if dy_cells != 0:
-            pane.pan_price_by_px(dy_cells * self._px_per_cell_y)
+
+        if self._drag_mode == "pan":
+            if dx_cells != 0:
+                pane.pan_time_by_px(dx_cells * self._px_per_cell_x)
+            if dy_cells != 0:
+                pane.pan_price_by_px(dy_cells * self._px_per_cell_y)
+        elif self._drag_mode == "price_zoom":
+            # Drag DOWN on the price gutter → expand the visible price
+            # range (compress the chart vertically). Center stays put.
+            dy_px = dy_cells * self._cell_h
+            factor = _AXIS_ZOOM_PER_PX ** dy_px
+            center = (pane.price.price_min + pane.price.price_max) * 0.5
+            half   = (pane.price.price_max - pane.price.price_min) * 0.5 * factor
+            pane.price.price_min = center - half
+            pane.price.price_max = center + half
+        elif self._drag_mode == "time_zoom":
+            # Drag RIGHT on the time gutter → bars get wider (zoom in).
+            dx_px  = dx_cells * self._cell_w
+            factor = _AXIS_ZOOM_PER_PX ** dx_px
+            new_bw = max(2.0, min(64.0, pane.time.bar_width * factor))
+            pane.time.bar_width = new_bw
+
         self._drag_anchor = (event.x, event.y)
         self._dirty = True
 
     def on_mouse_up(self, event: events.MouseUp) -> None:
         if event.button == 1:
             self._drag_anchor = None
+            self._drag_mode   = None
 
     def on_mouse_scroll_up(self, event: events.MouseScrollUp) -> None:
         self._zoom(_ZOOM_FACTOR)
@@ -188,7 +232,7 @@ class SikapApp(App):
         self._zoom(1.0 / _ZOOM_FACTOR)
 
     def _zoom(self, factor: float) -> None:
-        """Multiplicative zoom. Each notch scales bar_width by `factor`,
+        """Multiplicative wheel zoom. Each notch scales bar_width by `factor`,
         giving consistent perceptual steps across the [2, 64] range."""
         pane = self._engine.pane(self._pane_id)
         if pane is None:
