@@ -20,9 +20,10 @@ from textual.widgets import Footer, Header
 from core.candle import Timeframe
 from core.engine import AppEngine
 
+import native
+
 from tui.chart_widget import ChartWidget
 from tui.input import detect_cell_size
-from tui.kitty import KittyEncoder, delete_all_images
 from tui.rasterizer import Rasterizer
 
 
@@ -72,7 +73,6 @@ class SikapApp(App):
         self._engine.session.seek(2**63 - 1)
         self._pane_id      = self._engine.add_pane(symbol, tf, width=1.0, height=1.0)
         self._rasterizer   = Rasterizer(1, 1)
-        self._kitty        = KittyEncoder()
         self._cell_w, self._cell_h = detect_cell_size()
         self._frame_count  = 0
         self._last_region  = None        # detect first/changed layout
@@ -255,14 +255,14 @@ class SikapApp(App):
 
         # Move cursor to chart cell origin (1-based for ANSI), then transmit.
         self._tty.write(f"\x1b[{region.y + 1};{region.x + 1}H".encode())
-        self._kitty.transmit_image(
-            self._tty, rgba, chart_pixel_w, chart_pixel_h,
-            image_id=_IMAGE_ID, cols=region.width, rows=region.height,
-        )
+        self._tty.write(native.encode_image(
+            rgba, chart_pixel_w, chart_pixel_h,
+            _IMAGE_ID, region.width, region.height,
+        ))
 
         self._frame_count += 1
         if self._frame_count % _PURGE_EVERY == 0:
-            delete_all_images(self._tty)
+            self._tty.write(native.delete_all_images_seq())
 
 
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:

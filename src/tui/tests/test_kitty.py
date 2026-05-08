@@ -1,18 +1,16 @@
-import io
-import zlib
+"""Tests for the native Kitty graphics protocol encoder."""
+
 import base64
+import os
+import zlib
 
-from tui.kitty import KittyEncoder
+import native
 
 
-def test_transmit_image_emits_one_chunk_for_small_payload():
-    out = io.BytesIO()
+def test_encode_image_emits_one_chunk_for_small_payload():
     rgba = bytes([255, 0, 0, 255] * 4)              # 2×2 red
-    enc = KittyEncoder()
-    enc.transmit_image(out, rgba, width=2, height=2,
-                       image_id=42, cols=1, rows=1)
+    data = native.encode_image(rgba, 2, 2, 42, 1, 1)
 
-    data = out.getvalue()
     # Expect a single APC sequence starting with \x1b_G... and ending with \x1b\\
     assert data.startswith(b"\x1b_G")
     assert data.endswith(b"\x1b\\")
@@ -27,20 +25,16 @@ def test_transmit_image_emits_one_chunk_for_small_payload():
     assert "f=32" in header   # RGBA32
 
     # Body should be valid base64-of-zlib of the original rgba.
-    body = data[header_end + 1 : -2]                # strip header `;` and trailing `\x1b\\`
+    body = data[header_end + 1 : -2]                # strip header `;` + trailing `\x1b\\`
     decoded = zlib.decompress(base64.b64decode(body))
     assert decoded == rgba
 
 
-def test_transmit_image_chunks_large_payload():
+def test_encode_image_chunks_large_payload():
     """Random RGBA bytes don't compress, so a 64 KB payload definitely
     spans multiple 4096-byte chunks after zlib + base64."""
-    import os
-    out = io.BytesIO()
-    rgba = os.urandom(64 * 1024)        # 64 KB random — incompressible
-    KittyEncoder().transmit_image(out, rgba, 128, 128,
-                                   image_id=1, cols=10, rows=10)
-    data = out.getvalue()
+    rgba = os.urandom(64 * 1024)
+    data = native.encode_image(rgba, 128, 128, 1, 10, 10)
     # Multiple chunks → at least one m=1 followed by a final m=0.
     assert b"m=1" in data
     assert data.endswith(b"\x1b\\")
