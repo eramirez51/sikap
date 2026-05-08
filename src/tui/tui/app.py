@@ -204,18 +204,14 @@ class SikapApp(App):
         elif self._drag_mode == "price_zoom":
             # Drag DOWN on the price gutter → expand the visible price
             # range (compress the chart vertically). Center stays put.
-            dy_px = dy_cells * self._cell_h
+            dy_px  = dy_cells * self._cell_h
             factor = _AXIS_ZOOM_PER_PX ** dy_px
-            center = (pane.price.price_min + pane.price.price_max) * 0.5
-            half   = (pane.price.price_max - pane.price.price_min) * 0.5 * factor
-            pane.price.price_min = center - half
-            pane.price.price_max = center + half
+            pane.price.zoom_around_center(factor)
         elif self._drag_mode == "time_zoom":
             # Drag RIGHT on the time gutter → bars get wider (zoom in).
             dx_px  = dx_cells * self._cell_w
             factor = _AXIS_ZOOM_PER_PX ** dx_px
-            new_bw = max(2.0, min(64.0, pane.time.bar_width * factor))
-            pane.time.bar_width = new_bw
+            pane.time.zoom_bar_width(factor)
 
         self._drag_anchor = (event.x, event.y)
         self._dirty = True

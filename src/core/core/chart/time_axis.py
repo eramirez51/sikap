@@ -56,6 +56,13 @@ class TimeAxis:
         first = max(0, last - max(visible - 1, 0))
         return (first, last)
 
+    def zoom_bar_width(self, factor: float) -> None:
+        """Multiplicative zoom on bar width. `factor>1` widens bars (zoom in);
+        `factor<1` narrows them (zoom out). Clamped to [2, 64]."""
+        if factor <= 0.0:
+            return
+        self.bar_width = max(2.0, min(64.0, self.bar_width * factor))
+
     def resize(self, width: float) -> None:
         self.width = width
 

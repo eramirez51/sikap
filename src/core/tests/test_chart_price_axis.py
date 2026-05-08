@@ -58,3 +58,26 @@ def test_projection_consistent_with_y_for_price():
     for p in (100.0, 150.0, 200.0):
         from_proj = p * proj.price_scale + proj.price_offset
         assert abs(axis.y_for_price(p) - from_proj) < 1e-3
+
+
+def test_zoom_around_center_keeps_midpoint_and_scales_span():
+    axis = PriceAxis.new(400.0)
+    axis.price_min = 100.0
+    axis.price_max = 200.0
+    axis.zoom_around_center(2.0)         # widen 2× → span 200, center 150
+    assert abs(axis.price_min - 50.0)  < 1e-9
+    assert abs(axis.price_max - 250.0) < 1e-9
+
+    axis.zoom_around_center(0.5)         # back to span 100, center 150
+    assert abs(axis.price_min - 100.0) < 1e-9
+    assert abs(axis.price_max - 200.0) < 1e-9
+
+
+def test_zoom_around_center_ignores_non_positive_factor():
+    axis = PriceAxis.new(400.0)
+    axis.price_min = 100.0
+    axis.price_max = 200.0
+    axis.zoom_around_center(0.0)
+    axis.zoom_around_center(-1.0)
+    assert axis.price_min == 100.0
+    assert axis.price_max == 200.0

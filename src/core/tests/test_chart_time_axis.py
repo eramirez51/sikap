@@ -53,3 +53,20 @@ def test_labels_empty_for_degenerate():
     axis = _axis(10.0, 0, 100.0)
     assert axis.labels([], 400.0) == []
     assert axis.labels([_c(0)], 400.0) == []
+
+
+def test_zoom_bar_width_multiplies_and_clamps():
+    axis = _axis(8.0, 0, 800.0)
+    axis.zoom_bar_width(2.0)
+    assert axis.bar_width == 16.0
+    axis.zoom_bar_width(100.0)           # would go to 1600, clamps to 64
+    assert axis.bar_width == 64.0
+    axis.zoom_bar_width(0.0001)          # would go below 2, clamps to 2
+    assert axis.bar_width == 2.0
+
+
+def test_zoom_bar_width_ignores_non_positive_factor():
+    axis = _axis(8.0, 0, 800.0)
+    axis.zoom_bar_width(0.0)
+    axis.zoom_bar_width(-1.0)
+    assert axis.bar_width == 8.0

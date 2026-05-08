@@ -67,6 +67,17 @@ class PriceAxis:
         self.price_min += dprice
         self.price_max += dprice
 
+    def zoom_around_center(self, factor: float) -> None:
+        """Multiplicative zoom around the visible-range midpoint. `factor>1`
+        widens the visible price range (chart compresses vertically);
+        `factor<1` narrows it (chart expands)."""
+        if factor <= 0.0:
+            return
+        center = (self.price_min + self.price_max) * 0.5
+        half   = (self.price_max - self.price_min) * 0.5 * factor
+        self.price_min = center - half
+        self.price_max = center + half
+
     def resize(self, height: float) -> None:
         self.height = height
 
