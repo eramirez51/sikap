@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import bisect
 from dataclasses import dataclass, field
 from typing import Sequence
 
@@ -116,12 +115,11 @@ class ReplayBuffer:
         tf_sec = self.stepping_tf.seconds
 
         if direction > 0:
-            # forward: first bar whose end ts >= replay_ts + tf_sec
-            target = self.replay_ts + tf_sec
-            for i, c in enumerate(buf):
-                if c.ts + tf_sec - 1 >= target:
-                    self.replay_ts = c.ts + tf_sec - 1
-                    return
+            # forward: first bar whose ts > replay_ts; equivalently, bsearch(replay_ts) + 1.
+            idx = bsearch(buf, self.replay_ts)
+            next_idx = 0 if idx is None else idx + 1
+            if next_idx < len(buf):
+                self.replay_ts = buf[next_idx].ts + tf_sec - 1
         else:
             # backward: last bar whose end ts < replay_ts
             target = self.replay_ts - tf_sec
