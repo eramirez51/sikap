@@ -63,6 +63,16 @@ class Rasterizer:
             for tp in pane.time.labels(pane.candles, pane.price.height)
         ]
 
+        # Flatten every overlay's polylines into one list. Each polyline is
+        # SoA: parallel xs/ys f64 buffers in chart coords. Rust projects
+        # them via the same Viewport that places candles so positions stay
+        # aligned through pan/zoom.
+        polylines = [
+            (pl.xs, pl.ys, _to_u8_rgba(pl.color), pl.width)
+            for overlay in pane.overlays
+            for pl in overlay.polylines
+        ]
+
         return self._native.render(
             bg         = _BG_COLOR,
             bull       = _BULL_COLOR,
@@ -78,4 +88,5 @@ class Rasterizer:
             lows       = lows,
             closes     = closes,
             labels     = labels,
+            polylines  = polylines,
         )

@@ -11,6 +11,8 @@ from __future__ import annotations
 import argparse
 import math
 import sys
+from bisect import bisect_left, bisect_right
+from datetime import datetime, timezone
 from pathlib import Path
 
 from textual import events
@@ -19,6 +21,8 @@ from textual.widgets import Footer, Header
 
 from core.candle import Timeframe
 from core.engine import AppEngine
+from core.engine.pane import EnginePane
+from core.indicators.vwap import compute_vwap, globex_daily_anchor, vwap_overlay
 
 import native
 
@@ -61,16 +65,28 @@ class SikapApp(App):
         ("q,ctrl+c",  "quit",     "quit"),
     ]
 
-    def __init__(self, parquet_path: Path, symbol: str, tf: Timeframe) -> None:
+    def __init__(
+        self,
+        parquet_path: Path,
+        symbol: str,
+        tf: Timeframe,
+        view_from: int = 0,
+        view_to:   int = 2**63 - 1,
+    ) -> None:
         super().__init__()
         self._parquet_path = parquet_path
         self._symbol       = symbol
         self._tf           = tf
+        self._view_from    = view_from
+        self._view_to      = view_to
         self._engine       = AppEngine(parquet_path.parent)
+        # Engine extent is always the full parquet — `view_from`/`view_to`
+        # only position the initial cursor + visible window, so the user
+        # can pan past either edge.
         self._engine.open(symbol, tf, range_from=0, range_to=2**63 - 1)
-        # Seek cursor to the end of the data so the chart preloads with all
-        # candles instead of just the first bar (replay starts at the end).
-        self._engine.session.seek(2**63 - 1)
+        # Seek to the right edge of the requested view (defaults to end of
+        # data when no --to given).
+        self._engine.session.seek(view_to)
         self._pane_id      = self._engine.add_pane(symbol, tf, width=1.0, height=1.0)
         self._rasterizer   = Rasterizer(1, 1)
         self._cell_w, self._cell_h = detect_cell_size()
@@ -117,6 +133,51 @@ class SikapApp(App):
 
     # ── Geometry / data lifecycle ────────────────────────────────
 
+    def _fit_initial_view(self, pane: EnginePane) -> None:
+        """Position the time axis to cover [view_from, view_to]. Called once
+        on the first geometry callback. Skipped when both args are at their
+        defaults (we then keep the engine's standard 'last bar at right edge'
+        behavior with default zoom)."""
+        candles = pane.candles
+        if not candles:
+            return
+        if self._view_from == 0 and self._view_to == 2**63 - 1:
+            return  # neither bound supplied
+        # Map ts → bar index. bisect over a flat ts list is cheaper than
+        # passing key= per call, and we only build it once.
+        ts_list = [c.ts for c in candles]
+        i_to_excl = bisect_right(ts_list, self._view_to)
+        if i_to_excl == 0:
+            return  # everything is past view_to
+        i_to = i_to_excl - 1
+        i_from = bisect_left(ts_list, self._view_from)
+        if i_from > i_to:
+            i_from = i_to
+        visible_bars = max(1, i_to - i_from + 1)
+        # Same [2, 64] clamp as zoom_bar_width — keeps the chart legible if
+        # the user requests an extreme window.
+        pane.time.bar_width  = max(2.0, min(64.0, pane.time.width / visible_bars))
+        pane.time.base_index = float(i_to)
+        # Refit price to the new visible range (resize() triggers it via the
+        # public API, no private call needed).
+        pane.resize(pane.time.width, pane.price.height)
+
+    def _attach_indicators(self, pane: EnginePane) -> None:
+        """Recompute and attach indicator overlays for a freshly rebuilt
+        pane. Cheap enough to run on every rebuild — the hot loop is in
+        Rust and the candle list is the only input."""
+        if not pane.candles:
+            pane.overlays = []
+            return
+        # Visual default mirrors TradingView's session-VWAP indicator on
+        # an ES chart in ETH mode: Anchor = Session (Globex daily reset
+        # at 18:00 ET) and Bands Multiplier #1 = 1. Strategy code passes
+        # k_bands=(1.0, 1.75, 2.0) when the full algorithms.md surface
+        # is needed.
+        result = compute_vwap(pane.candles, anchor=globex_daily_anchor,
+                              k_bands=(1.0,))
+        pane.overlays = [vwap_overlay(result)]
+
     def _on_geometry_changed(self, region) -> None:
         """Layout/size changed. Resize axes geometrically; preserve pan/zoom
         state. On first real geometry, also refit price (we can't fit
@@ -137,6 +198,8 @@ class SikapApp(App):
         if not self._initial_fit_done:
             bars = self._engine.session.bars(self._symbol, self._tf)
             pane.rebuild(bars)
+            self._fit_initial_view(pane)
+            self._attach_indicators(pane)
             self._initial_fit_done = True
         self._render_chart(region)
 
@@ -145,6 +208,8 @@ class SikapApp(App):
     def action_step(self, direction: int) -> None:
         # AppEngine.step() rebuilds panes internally — no extra rebuild needed.
         self._engine.step(direction)
+        for pane in self._engine.panes:
+            self._attach_indicators(pane)
         self._dirty = True
 
     def action_fit(self) -> None:
@@ -153,6 +218,7 @@ class SikapApp(App):
             return
         bars = self._engine.session.bars(self._symbol, self._tf)
         pane.rebuild(bars)
+        self._attach_indicators(pane)
         self._dirty = True
 
     # ── Mouse: drag-pan + axis-drag zoom + wheel-zoom ────────────
@@ -261,6 +327,16 @@ class SikapApp(App):
             self._tty.write(native.delete_all_images_seq())
 
 
+def _parse_ts(s: str) -> int:
+    """Parse ISO 8601 date or datetime to unix seconds. Naive inputs are
+    interpreted as UTC. Accepts e.g. `2025-12-22`, `2025-12-22T18:00`,
+    `2025-12-22T18:00:00+00:00`."""
+    dt = datetime.fromisoformat(s)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return int(dt.timestamp())
+
+
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(prog="sikap-tui")
     parser.add_argument("--parquet", type=Path, required=True,
@@ -268,6 +344,10 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--symbol", help="symbol name (default: parquet stem)")
     parser.add_argument("--tf", default="15m",
                         help="timeframe (default: 15m)")
+    parser.add_argument("--from", dest="view_from", type=_parse_ts, default=0,
+                        help="ISO date/datetime; left edge of initial view (data outside is still loadable)")
+    parser.add_argument("--to",   dest="view_to",   type=_parse_ts, default=2**63 - 1,
+                        help="ISO date/datetime; right edge of initial view + cursor seek target")
     return parser.parse_args(argv)
 
 
@@ -280,7 +360,8 @@ def main(argv: list[str] | None = None) -> int:
     symbol = args.symbol or args.parquet.stem
     tf = Timeframe.from_str(args.tf)
 
-    SikapApp(args.parquet, symbol, tf).run()
+    SikapApp(args.parquet, symbol, tf,
+             view_from=args.view_from, view_to=args.view_to).run()
     return 0
 
 

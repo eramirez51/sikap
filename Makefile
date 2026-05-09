@@ -1,7 +1,9 @@
-SYMBOL       ?= NQ
+SYMBOL       ?= ES
 DATA_SRC     ?= .build/databento
 DATA_OUT     ?= .build/magsi/data
-TUI_TF       ?= 15m
+TUI_TF       ?= 30m
+TUI_FROM     ?= 2025-12-22
+TUI_TO       ?= 2026-01-08
 
 .PHONY: data
 data:
@@ -9,7 +11,9 @@ data:
 
 .PHONY: tui
 tui:
-	uv run --project src/tui sikap-tui --parquet $(DATA_OUT)/$(SYMBOL).parquet --tf $(TUI_TF)
+	uv run --project src/tui sikap-tui --parquet $(DATA_OUT)/$(SYMBOL).parquet --tf $(TUI_TF) \
+		$(if $(TUI_FROM),--from $(TUI_FROM)) \
+		$(if $(TUI_TO),--to $(TUI_TO))
 
 .PHONY: test
 test:

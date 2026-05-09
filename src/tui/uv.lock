@@ -16,11 +16,15 @@ name = "core"
 version = "0.1.0"
 source = { editable = "../core" }
 dependencies = [
+    { name = "native" },
     { name = "pyarrow" },
 ]
 
 [package.metadata]
-requires-dist = [{ name = "pyarrow", specifier = ">=16" }]
+requires-dist = [
+    { name = "native", editable = "../native" },
+    { name = "pyarrow", specifier = ">=16" },
+]
 
 [package.metadata.requires-dev]
 dev = [{ name = "pytest", specifier = ">=8" }]
