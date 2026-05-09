@@ -9,18 +9,20 @@ from typing import Sequence
 
 from core.candle import Candle, Timeframe
 from core.chart.price_axis import PriceAxis
+from core.chart.primitives import Overlay
 from core.chart.time_axis import TimeAxis
 from core.chart.viewport import Viewport
 
 
 @dataclass
 class EnginePane:
-    id:      int
-    symbol:  str
-    tf:      Timeframe
-    time:    TimeAxis
-    price:   PriceAxis
-    candles: list[Candle] = field(default_factory=list)
+    id:       int
+    symbol:   str
+    tf:       Timeframe
+    time:     TimeAxis
+    price:    PriceAxis
+    candles:  list[Candle]  = field(default_factory=list)
+    overlays: list[Overlay] = field(default_factory=list)
 
     @classmethod
     def new(cls, id: int, symbol: str, tf: Timeframe,

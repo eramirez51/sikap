@@ -5,7 +5,11 @@ description = "sikap core: pure replay engine"
 requires-python = ">=3.12"
 dependencies = [
     "pyarrow>=16",
+    "native",
 ]
+
+[tool.uv.sources]
+native = { path = "../native", editable = true }
 
 [dependency-groups]
 dev = [
