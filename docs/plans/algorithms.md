@@ -31,6 +31,26 @@ A trade only triggers when **all** of these align:
 - **Target:** session VWAP first, then opposite 1st SD band. Or fixed RR (≥ 1:2).
 - Hard mechanical stop tied to **invalidation of the liquidity zone**, never a dollar amount.
 
+**Risk sizing:** 1–2% account risk per setup. The author claims this is the only knob that matters for scaling — same script runs from a $2k personal account up to a $150k prop-funded account.
+
+**Candidate refinements (from a reproduction attempt, not confirmed by OP):**
+- **Momentum confirmation** as final trigger — smoothed rate-of-change oscillator crossing above its signal line, in addition to the 5m close-back-inside-zone.
+- **15-minute cooldown** between trades to prevent re-entering a still-failing zone.
+- **ATR-based stop fallback** — 1.5× ATR below entry — when no clean absorption wick exists to anchor the stop.
+
+Treat these as systematic alternatives where OP's discretionary heuristics ("a few ticks behind the wick") need a mechanical equivalent.
+
+## Runtime dashboard (the 4 primitives the system actually watches)
+
+The author's gap-day post (NQ weekend gap) lists the dashboard's tracked signals — useful as a concrete feature list for a detector layer:
+
+1. **Sell/buy aggression vs displacement** — aggressive market orders without range expansion ⇒ absorption tag
+2. **VWAP reclaim efficiency** — how cleanly price re-enters VWAP after an extension
+3. **Liquidity stacking** — passive liquidity heatmap above vs below current price
+4. **Speed of tape + order-size divergence** — rate of incoming orders combined with order size; divergence between the two flags institutional vs retail flow
+
+These are not separate strategies — they are the live diagnostic surface that confirms or rejects the entry conditions in the table above.
+
 ## The core mechanic: absorption
 
 Auction theory: price moves to advertise for business. Up = looking for sellers, down = looking for buyers.
@@ -70,6 +90,18 @@ Numbers vary by post (different time windows):
 | Max drawdown | ~5.8–6.8% live; 20–25% in 5y backtest |
 | Frequency | ~0.8 trades/day; can sit flat for a week |
 | Reported 2025 | gross $162.3k, net ~$127k from $2k start |
+
+**Reproduction benchmark (from a commenter, MNQ, 1y backtest):**
+
+| Metric | Value |
+|---|---|
+| Trades | 117 (~1 every 2 days) |
+| Win rate | 39% |
+| Profit factor | 1.25 |
+| Net | +$1,872 on 1 MNQ contract |
+| Max drawdown | $1,870 |
+
+The commenter implemented ADX<25 + 60-bar/50-bin HVN + 1.75 SD VWAP + CVD divergence + ROC momentum confirm — i.e. most of the table above, **minus** the volumetric order block and Hurst exponent. PF dropped from 2.1+ to 1.25. Useful as a negative control: those two filters appear to carry a meaningful share of the edge.
 
 ## Implementation stack (per the author)
 
