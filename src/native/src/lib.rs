@@ -16,12 +16,14 @@ use std::sync::OnceLock;
 
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as B64;
+use chrono::{Datelike, TimeZone, Timelike};
+use chrono_tz::America::New_York;
 use flate2::Compression;
 use flate2::write::ZlibEncoder;
 use fontdue::{Font, FontSettings};
 use pyo3::buffer::PyBuffer;
 use pyo3::prelude::*;
-use pyo3::types::PyBytes;
+use pyo3::types::{PyBytes, PyList, PyTuple};
 
 type Rgba = (u8, u8, u8, u8);
 
@@ -84,6 +86,11 @@ impl Rasterizer {
     ///
     /// `labels` is a list of `(text, x, y, size_px, (r, g, b, a))` tuples for
     /// axis annotations.
+    /// `polylines` is a flat list of `(xs, ys, color, width_px)` tuples in
+    /// SoA form: `xs` and `ys` are f64 sequences (or `array.array('d', ...)`
+    /// for buffer-protocol speed) of equal length, in chart coords
+    /// (bar_index, price). The renderer projects them via `viewport`.
+    /// Width currently ignored (1 px).
     /// `chart_w` / `chart_h` are the candle drawing area; everything to the
     /// right and below those bounds is the gutter where axis labels live.
     /// Candle painting is hard-clipped to the candle area so wicks/bodies
@@ -94,6 +101,7 @@ impl Rasterizer {
         chart_w, chart_h,
         opens, highs, lows, closes,
         labels,
+        polylines,
     ))]
     #[allow(clippy::too_many_arguments)]
     fn render<'py>(
@@ -112,7 +120,8 @@ impl Rasterizer {
         highs:  &Bound<'py, PyAny>,
         lows:   &Bound<'py, PyAny>,
         closes: &Bound<'py, PyAny>,
-        labels: Vec<(String, f32, f32, f32, Rgba)>,
+        labels:    Vec<(String, f32, f32, f32, Rgba)>,
+        polylines: &Bound<'py, PyAny>,
     ) -> PyResult<Bound<'py, PyBytes>> {
         let opens_buf  = PyBuffer::<f64>::get(opens)?;
         let highs_buf  = PyBuffer::<f64>::get(highs)?;
@@ -197,6 +206,89 @@ impl Rasterizer {
             );
         }
 
+        // Indicator polylines — chart-space (bar_index, price) projected via
+        // viewport, clipped to the candle area so they can't bleed into the
+        // gutter where the axis labels live. Drawn after candles so they sit
+        // on top of bodies/wicks; before labels so labels stay legible.
+        //
+        // Each polyline arrives as a Python tuple `(xs, ys, color, width)`.
+        // `xs` and `ys` are buffer-protocol arrays (`array.array('d', …)`)
+        // that we read zero-copy via `PyBuffer::as_slice` — critical for
+        // pan/zoom perf, since this runs every frame.
+        let polylines_list = polylines.downcast::<PyList>()?;
+        for item in polylines_list.iter() {
+            let tup = item.downcast::<PyTuple>()?;
+            if tup.len() < 4 {
+                continue;
+            }
+            let xs_any = tup.get_item(0)?;
+            let ys_any = tup.get_item(1)?;
+            let color: Rgba = tup.get_item(2)?.extract()?;
+            // width currently unused (line is always 1 px); keep extracting
+            // so a malformed input still surfaces as an error.
+            let _width: f32 = tup.get_item(3)?.extract()?;
+
+            let xs_buf = PyBuffer::<f64>::get(&xs_any)?;
+            let ys_buf = PyBuffer::<f64>::get(&ys_any)?;
+            let xs_slice = match xs_buf.as_slice(py) {
+                Some(s) => s,
+                None => continue,    // non-contiguous: skip this polyline
+            };
+            let ys_slice = match ys_buf.as_slice(py) {
+                Some(s) => s,
+                None => continue,
+            };
+            let n = xs_slice.len().min(ys_slice.len());
+            if n < 2 {
+                continue;
+            }
+            // Visible bar-index window inferred from the viewport.
+            let cw = clip_w as f32;
+            let ch = clip_h as f32;
+            let (bar_lo_f, bar_hi_f) = if viewport.bar_spacing > 0.0 {
+                let inv = 1.0 / viewport.bar_spacing;
+                ((-viewport.x_offset) * inv, (cw - viewport.x_offset) * inv)
+            } else {
+                (f32::NEG_INFINITY, f32::INFINITY)
+            };
+            // Whole-polyline skip: each polyline is one VWAP session, so
+            // its xs run is contiguous. If the run is entirely outside
+            // the viewport we drop the whole thing in O(1). Otherwise
+            // each segment is checked individually.
+            let first_x = xs_slice[0].get() as f32;
+            let last_x  = xs_slice[n - 1].get() as f32;
+            let (poly_min_x, poly_max_x) = if first_x <= last_x {
+                (first_x, last_x)
+            } else {
+                (last_x, first_x)
+            };
+            if poly_max_x < bar_lo_f || poly_min_x > bar_hi_f {
+                continue;
+            }
+            for i in 0..n - 1 {
+                let bi0 = xs_slice[i].get() as f32;
+                let bi1 = xs_slice[i + 1].get() as f32;
+                if (bi0 < bar_lo_f && bi1 < bar_lo_f)
+                    || (bi0 > bar_hi_f && bi1 > bar_hi_f)
+                {
+                    continue;
+                }
+                let p0 = ys_slice[i].get() as f32;
+                let p1 = ys_slice[i + 1].get() as f32;
+                let x0 = bi0 * viewport.bar_spacing + viewport.x_offset;
+                let y0 = p0  * viewport.price_scale + viewport.price_offset;
+                let x1 = bi1 * viewport.bar_spacing + viewport.x_offset;
+                let y1 = p1  * viewport.price_scale + viewport.price_offset;
+                if (y0 < 0.0 && y1 < 0.0) || (y0 >= ch && y1 >= ch) {
+                    continue;
+                }
+                draw_line_aa(
+                    &mut self.buf, self.width, clip_w, clip_h,
+                    x0, y0, x1, y1, color,
+                );
+            }
+        }
+
         // Axis labels — clip to the full buffer so they can use the gutter.
         for (text, x, y, size, color) in &labels {
             draw_text(&mut self.buf, self.width, self.height, text, *x, *y, *size, *color);
@@ -270,9 +362,11 @@ fn delete_all_images_seq() -> Vec<u8> {
 #[pymodule]
 fn native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Rasterizer>()?;
+    m.add_class::<Anchor>()?;
     m.add_function(wrap_pyfunction!(encode_image, m)?)?;
     m.add_function(wrap_pyfunction!(delete_image_seq, m)?)?;
     m.add_function(wrap_pyfunction!(delete_all_images_seq, m)?)?;
+    m.add_function(wrap_pyfunction!(compute_vwap, m)?)?;
     Ok(())
 }
 
@@ -317,6 +411,236 @@ fn fill_rect(
             chunk[2] = color.2;
             chunk[3] = color.3;
         }
+    }
+}
+
+// ── Anchored VWAP compute ────────────────────────────────────────────
+
+/// Session anchor scheme for VWAP. Mirrors the three Python helpers in
+/// `core.indicators.vwap` so the public API stays the same.
+#[pyclass(eq, eq_int)]
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Anchor {
+    /// 18:00 ET (CME Globex daily session open). Default for futures.
+    GlobexDaily,
+    /// 09:30 ET (US regular trading hours open).
+    RthUs,
+    /// 00:00 UTC.
+    UtcDaily,
+}
+
+fn anchor_for(a: Anchor, ts: i64) -> i64 {
+    match a {
+        Anchor::GlobexDaily => et_anchor(ts, 18, 0),
+        Anchor::RthUs       => et_anchor(ts,  9, 30),
+        Anchor::UtcDaily    => ts - ts.rem_euclid(86_400),
+    }
+}
+
+/// Most recent New_York-local `(hh:mm)` at or before `ts`. Handles DST
+/// via chrono-tz; if the constructed local datetime is non-existent or
+/// ambiguous (DST transition window), uses the `latest` interpretation
+/// — for 09:30 and 18:00 the transition window is far away so this
+/// branch is essentially never taken.
+fn et_anchor(ts: i64, hh: u32, mm: u32) -> i64 {
+    let utc = chrono::Utc.timestamp_opt(ts, 0).single().expect("ts in range");
+    let dt  = utc.with_timezone(&New_York);
+    let mut date = dt.date_naive();
+    let before_anchor = (dt.hour(), dt.minute()) < (hh, mm);
+    if before_anchor {
+        date = date - chrono::Duration::days(1);
+    }
+    let local = date.and_hms_opt(hh, mm, 0).expect("valid hms");
+    let resolved = New_York
+        .from_local_datetime(&local)
+        .latest()
+        .or_else(|| New_York.from_local_datetime(&local).earliest())
+        .expect("tz resolution");
+    resolved.timestamp()
+}
+
+/// Anchored VWAP + volume-weighted SD bands.
+///
+/// Inputs are buffer-protocol arrays (e.g. `array.array('d', ...)`); they're
+/// read zero-copy as &[f64] / &[i64].
+///
+/// Returns `(ts, vwap, std, lower, upper, session_starts)`:
+/// - `ts`, `vwap`, `std` of length n.
+/// - `lower` / `upper` of length `n_bands * n` (band k at `[k*n .. (k+1)*n]`).
+/// - `session_starts`: bar indices where a new anchor session begins. Always
+///    starts with 0; the renderer uses these to break overlay polylines so
+///    no segment crosses a session reset.
+#[pyfunction]
+#[pyo3(signature = (ts, opens, highs, lows, closes, volumes, anchor, k_bands))]
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
+fn compute_vwap<'py>(
+    py: Python<'py>,
+    ts:      &Bound<'py, PyAny>,
+    opens:   &Bound<'py, PyAny>,
+    highs:   &Bound<'py, PyAny>,
+    lows:    &Bound<'py, PyAny>,
+    closes:  &Bound<'py, PyAny>,
+    volumes: &Bound<'py, PyAny>,
+    anchor:  Anchor,
+    k_bands: Vec<f64>,
+) -> PyResult<(Vec<i64>, Vec<f64>, Vec<f64>, Vec<f64>, Vec<f64>, Vec<i64>)> {
+    let _ = opens;  // typical price uses HLC3; opens unused but kept for API symmetry
+    let ts_buf  = PyBuffer::<i64>::get(ts)?;
+    let h_buf   = PyBuffer::<f64>::get(highs)?;
+    let l_buf   = PyBuffer::<f64>::get(lows)?;
+    let c_buf   = PyBuffer::<f64>::get(closes)?;
+    let v_buf   = PyBuffer::<i64>::get(volumes)?;
+    let n = ts_buf.item_count();
+    if h_buf.item_count() != n
+        || l_buf.item_count() != n
+        || c_buf.item_count() != n
+        || v_buf.item_count() != n
+    {
+        return Err(pyo3::exceptions::PyValueError::new_err(
+            "ts/opens/highs/lows/closes/volumes must have equal length",
+        ));
+    }
+    let ts_v = ts_buf.to_vec(py)?;
+    let h_v  = h_buf.to_vec(py)?;
+    let l_v  = l_buf.to_vec(py)?;
+    let c_v  = c_buf.to_vec(py)?;
+    let v_v  = v_buf.to_vec(py)?;
+
+    let n_bands = k_bands.len();
+    let mut ts_out    = Vec::with_capacity(n);
+    let mut vwap_out  = Vec::with_capacity(n);
+    let mut std_out   = Vec::with_capacity(n);
+    let mut lower_out = vec![0.0_f64; n_bands * n];
+    let mut upper_out = vec![0.0_f64; n_bands * n];
+    let mut session_starts: Vec<i64> = Vec::new();
+
+    let mut cur_anchor: i64 = i64::MIN;
+    let mut sum_v   = 0.0_f64;
+    let mut sum_pv  = 0.0_f64;
+    let mut sum_ppv = 0.0_f64;
+
+    for i in 0..n {
+        let ts_i = ts_v[i];
+        let a = anchor_for(anchor, ts_i);
+        if a != cur_anchor {
+            cur_anchor = a;
+            sum_v = 0.0;
+            sum_pv = 0.0;
+            sum_ppv = 0.0;
+            session_starts.push(i as i64);
+        }
+
+        let tp = (h_v[i] + l_v[i] + c_v[i]) / 3.0;
+        let vol = v_v[i];
+        if vol > 0 {
+            let v = vol as f64;
+            sum_v   += v;
+            sum_pv  += tp * v;
+            sum_ppv += tp * tp * v;
+        }
+
+        let (vwap, std) = if sum_v > 0.0 {
+            let vwap = sum_pv / sum_v;
+            let var  = sum_ppv / sum_v - vwap * vwap;
+            (vwap, if var > 0.0 { var.sqrt() } else { 0.0 })
+        } else {
+            (tp, 0.0)
+        };
+
+        ts_out.push(ts_i);
+        vwap_out.push(vwap);
+        std_out.push(std);
+        for k_idx in 0..n_bands {
+            let k = k_bands[k_idx];
+            lower_out[k_idx * n + i] = vwap - k * std;
+            upper_out[k_idx * n + i] = vwap + k * std;
+        }
+    }
+
+    Ok((ts_out, vwap_out, std_out, lower_out, upper_out, session_starts))
+}
+
+// ── Lines (Wu's antialiased) ─────────────────────────────────────────
+
+/// Plot one pixel of a Wu line, modulating its coverage with the line
+/// color's own alpha and clipping to `(clip_w, clip_h)`.
+#[inline]
+fn plot_aa(
+    buf: &mut [u8], stride_w: u32,
+    clip_w: u32, clip_h: u32,
+    x: i32, y: i32,
+    color: Rgba, coverage: f32,
+) {
+    if x < 0 || y < 0 || (x as u32) >= clip_w || (y as u32) >= clip_h {
+        return;
+    }
+    let cov = coverage.clamp(0.0, 1.0);
+    let a   = (cov * color.3 as f32).round() as u8;
+    if a == 0 {
+        return;
+    }
+    blend_pixel(buf, stride_w, x as u32, y as u32, color, a);
+}
+
+/// Wu's antialiased line. Both endpoints contribute fractional coverage
+/// to the two pixels straddling the minor axis; intermediate steps do
+/// the same. Single-pixel-wide for now.
+fn draw_line_aa(
+    buf: &mut [u8], stride_w: u32,
+    clip_w: u32, clip_h: u32,
+    x0: f32, y0: f32, x1: f32, y1: f32,
+    color: Rgba,
+) {
+    let steep = (y1 - y0).abs() > (x1 - x0).abs();
+    let (mut x0, mut y0, mut x1, mut y1) = if steep {
+        (y0, x0, y1, x1)
+    } else {
+        (x0, y0, x1, y1)
+    };
+    if x0 > x1 {
+        std::mem::swap(&mut x0, &mut x1);
+        std::mem::swap(&mut y0, &mut y1);
+    }
+    let dx = x1 - x0;
+    let dy = y1 - y0;
+    let gradient = if dx == 0.0 { 1.0 } else { dy / dx };
+
+    let plot = |buf: &mut [u8], px: i32, py: i32, cov: f32| {
+        if steep {
+            plot_aa(buf, stride_w, clip_w, clip_h, py, px, color, cov);
+        } else {
+            plot_aa(buf, stride_w, clip_w, clip_h, px, py, color, cov);
+        }
+    };
+
+    // First endpoint
+    let xend  = x0.round();
+    let yend  = y0 + gradient * (xend - x0);
+    let xgap  = 1.0 - (x0 + 0.5).fract().rem_euclid(1.0);
+    let xpxl1 = xend as i32;
+    let ypxl1 = yend.floor() as i32;
+    let yfrac = yend - yend.floor();
+    plot(buf, xpxl1, ypxl1,     (1.0 - yfrac) * xgap);
+    plot(buf, xpxl1, ypxl1 + 1, yfrac * xgap);
+    let mut intery = yend + gradient;
+
+    // Second endpoint
+    let xend2  = x1.round();
+    let yend2  = y1 + gradient * (xend2 - x1);
+    let xgap2  = (x1 + 0.5).fract().rem_euclid(1.0);
+    let xpxl2  = xend2 as i32;
+    let ypxl2  = yend2.floor() as i32;
+    let yfrac2 = yend2 - yend2.floor();
+    plot(buf, xpxl2, ypxl2,     (1.0 - yfrac2) * xgap2);
+    plot(buf, xpxl2, ypxl2 + 1, yfrac2 * xgap2);
+
+    // Main loop
+    for x in (xpxl1 + 1)..xpxl2 {
+        let yi = intery.floor() as i32;
+        let yf = intery - intery.floor();
+        plot(buf, x, yi,     1.0 - yf);
+        plot(buf, x, yi + 1, yf);
+        intery += gradient;
     }
 }
 
