@@ -1,6 +1,8 @@
 """Cross-package contract test. Writes via datasmith, reads via core.
 If row-group order or sentinel logic ever drifts between the two, this fails."""
 
+import pyarrow.parquet as pq
+
 from core.candle import ALL, Candle, Timeframe
 from core.storage import read_candles
 from datasmith.write import write_parquet
@@ -51,3 +53,20 @@ def test_roundtrip_all_empty_means_all_empty(tmp_path):
     write_parquet(path, {})
     for tf in ALL:
         assert read_candles(path, tf, 0, 2**63 - 1) == []
+
+
+def test_one_row_group_per_tf_even_for_large_batches(tmp_path):
+    """pyarrow's default caps a row group at ~1M rows and silently splits
+    larger batches — that would corrupt every later TF's index."""
+    big = _bars(0, 1_500_000, 60)   # > pyarrow's default 1,048,576 cap
+    path = tmp_path / "big.parquet"
+    write_parquet(path, {Timeframe.M1: big})
+
+    pf = pq.ParquetFile(path)
+    assert pf.num_row_groups == len(ALL), (
+        f"row groups must be 1 per TF in ALL; got {pf.num_row_groups}, "
+        f"expected {len(ALL)}"
+    )
+    # And the read still resolves M1 correctly.
+    got = read_candles(path, Timeframe.M1, 0, 2**63 - 1)
+    assert len(got) == 1_500_000

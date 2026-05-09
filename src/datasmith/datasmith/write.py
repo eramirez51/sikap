@@ -36,4 +36,8 @@ def write_parquet(
                 "close":     [c.close     for c in candles],
                 "volume":    [c.volume    for c in candles],
             }, schema=SCHEMA)
-            writer.write_batch(batch)
+            # Force exactly one row group per TF. pyarrow's default caps a
+            # row group at ~1M rows and silently splits anything larger,
+            # which would shift every later TF's row-group index — readers
+            # would silently fetch the wrong timeframe.
+            writer.write_batch(batch, row_group_size=max(batch.num_rows, 1))
