@@ -33,6 +33,7 @@ class Timeframe(Enum):
     M9 = 9
     M10 = 10
     M15 = 15
+    M30 = 30
     H1 = 60
     H2 = 120
     H3 = 180
@@ -67,6 +68,7 @@ _TF_STRINGS: dict[Timeframe, str] = {
     Timeframe.M9:  "9m",
     Timeframe.M10: "10m",
     Timeframe.M15: "15m",
+    Timeframe.M30: "30m",
     Timeframe.H1:  "1h",
     Timeframe.H2:  "2h",
     Timeframe.H3:  "3h",
@@ -84,7 +86,7 @@ _TF_FROM_STR: dict[str, Timeframe] = {v: k for k, v in _TF_STRINGS.items()}
 ALL: tuple[Timeframe, ...] = (
     Timeframe.M1,  Timeframe.M2,  Timeframe.M3,  Timeframe.M4,
     Timeframe.M5,  Timeframe.M6,  Timeframe.M7,  Timeframe.M8,
-    Timeframe.M9,  Timeframe.M10, Timeframe.M15,
+    Timeframe.M9,  Timeframe.M10, Timeframe.M15, Timeframe.M30,
     Timeframe.H1,  Timeframe.H2,  Timeframe.H3,  Timeframe.H4,
     Timeframe.D1,  Timeframe.W1,
 )

@@ -56,5 +56,6 @@ def test_row_group_index_round_trip():
 def test_row_group_index_specific_positions():
     assert row_group_index(Timeframe.M1) == 0
     assert row_group_index(Timeframe.M15) == 10
-    assert row_group_index(Timeframe.H4) == 14
+    assert row_group_index(Timeframe.M30) == 11
+    assert row_group_index(Timeframe.H4) == 15
     assert row_group_index(Timeframe.W1) == len(ALL) - 1
