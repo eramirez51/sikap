@@ -91,6 +91,9 @@ impl Rasterizer {
     /// for buffer-protocol speed) of equal length, in chart coords
     /// (bar_index, price). The renderer projects them via `viewport`.
     /// Width currently ignored (1 px).
+    /// `rects` is a flat list of `(x1, y1, x2, y2, color)` tuples in chart
+    /// coords (bar_index, price). Drawn *between* bg and candles so a
+    /// low-alpha fill tints the chart area without obscuring price action.
     /// `chart_w` / `chart_h` are the candle drawing area; everything to the
     /// right and below those bounds is the gutter where axis labels live.
     /// Candle painting is hard-clipped to the candle area so wicks/bodies
@@ -102,6 +105,7 @@ impl Rasterizer {
         opens, highs, lows, closes,
         labels,
         polylines,
+        rects,
     ))]
     #[allow(clippy::too_many_arguments)]
     fn render<'py>(
@@ -122,6 +126,7 @@ impl Rasterizer {
         closes: &Bound<'py, PyAny>,
         labels:    Vec<(String, f32, f32, f32, Rgba)>,
         polylines: &Bound<'py, PyAny>,
+        rects:     Vec<(f64, f64, f64, f64, Rgba)>,
     ) -> PyResult<Bound<'py, PyBytes>> {
         let opens_buf  = PyBuffer::<f64>::get(opens)?;
         let highs_buf  = PyBuffer::<f64>::get(highs)?;
@@ -143,6 +148,30 @@ impl Rasterizer {
 
         // Background
         fill_all(&mut self.buf, bg);
+
+        // Chart-space tint rectangles (e.g., HVN bands). Drawn after the
+        // background and before candles so candles paint over them; with
+        // low alpha they look like translucent zones behind the price
+        // action. Clipped to the candle area like everything else.
+        let clip_w_pre = chart_w.min(self.width);
+        let clip_h_pre = chart_h.min(self.height);
+        for (x1, y1, x2, y2, color) in &rects {
+            if color.3 == 0 {
+                continue;
+            }
+            let x_a = (*x1 as f32) * viewport.bar_spacing + viewport.x_offset;
+            let x_b = (*x2 as f32) * viewport.bar_spacing + viewport.x_offset;
+            let y_a = (*y1 as f32) * viewport.price_scale + viewport.price_offset;
+            let y_b = (*y2 as f32) * viewport.price_scale + viewport.price_offset;
+            let x_min = x_a.min(x_b);
+            let x_max = x_a.max(x_b);
+            let y_min = y_a.min(y_b);
+            let y_max = y_a.max(y_b);
+            fill_rect_alpha(
+                &mut self.buf, self.width, clip_w_pre, clip_h_pre,
+                x_min, y_min, x_max - x_min, y_max - y_min, *color,
+            );
+        }
 
         // Bodies + wicks — clipped to the candle area so they can't bleed
         // into the gutters under the axis labels.
@@ -410,6 +439,47 @@ fn fill_rect(
             chunk[1] = color.1;
             chunk[2] = color.2;
             chunk[3] = color.3;
+        }
+    }
+}
+
+/// Alpha-blended axis-aligned rectangle fill. Same clip semantics as
+/// `fill_rect`, but each pixel is blended over the existing buffer
+/// content using the color's alpha. The per-pixel math is unrolled
+/// outside the loop so a 1080p tint pass stays within a couple of
+/// milliseconds.
+fn fill_rect_alpha(
+    buf: &mut [u8],
+    stride_w: u32,
+    clip_w: u32, clip_h: u32,
+    x: f32, y: f32, w: f32, h: f32,
+    color: Rgba,
+) {
+    if color.3 == 0 || w <= 0.0 || h <= 0.0 {
+        return;
+    }
+    let x0 = x.max(0.0).min(clip_w as f32) as u32;
+    let y0 = y.max(0.0).min(clip_h as f32) as u32;
+    let x1 = (x + w).max(0.0).min(clip_w as f32) as u32;
+    let y1 = (y + h).max(0.0).min(clip_h as f32) as u32;
+    if x0 >= x1 || y0 >= y1 {
+        return;
+    }
+    let stride = (stride_w * 4) as usize;
+    let row_w  = ((x1 - x0) * 4) as usize;
+    let a   = color.3 as u32;
+    let inv = 255 - a;
+    let r_pre = color.0 as u32 * a;
+    let g_pre = color.1 as u32 * a;
+    let b_pre = color.2 as u32 * a;
+    for py in y0..y1 {
+        let row_start = (py as usize) * stride + (x0 as usize) * 4;
+        let row = &mut buf[row_start .. row_start + row_w];
+        for chunk in row.chunks_exact_mut(4) {
+            chunk[0] = ((r_pre + chunk[0] as u32 * inv) / 255) as u8;
+            chunk[1] = ((g_pre + chunk[1] as u32 * inv) / 255) as u8;
+            chunk[2] = ((b_pre + chunk[2] as u32 * inv) / 255) as u8;
+            chunk[3] = 255;
         }
     }
 }

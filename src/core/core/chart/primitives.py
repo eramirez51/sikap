@@ -36,11 +36,28 @@ class Polyline:
 
 
 @dataclass(frozen=True, slots=True)
+class Rect:
+    """A filled chart-space rectangle in (bar_index, price) coords.
+
+    The renderer sorts the corners internally, so callers needn't worry
+    about which point is the top-left. Drawn *behind* candles in the
+    pipeline (bg → rects → candles → polylines → labels), so a low-alpha
+    fill tints the chart area without obscuring price action.
+    """
+    x1:    float
+    y1:    float
+    x2:    float
+    y2:    float
+    color: Rgba   # alpha is honored — keep it low (≈0.1–0.2) for tints
+
+
+@dataclass(frozen=True, slots=True)
 class Overlay:
     """A named bundle of primitives produced by one indicator.
 
     The `name` lets the host attach/replace/remove the bundle by
     identity (e.g. recompute VWAP and replace the prior overlay).
     """
-    name: str
+    name:      str
     polylines: tuple[Polyline, ...] = ()
+    rects:     tuple[Rect, ...]     = ()

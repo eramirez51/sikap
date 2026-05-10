@@ -72,6 +72,13 @@ class Rasterizer:
             for overlay in pane.overlays
             for pl in overlay.polylines
         ]
+        # Filled chart-space rects (e.g. HVN tint bands). Drawn between
+        # bg and candles on the Rust side.
+        rects = [
+            (r.x1, r.y1, r.x2, r.y2, _to_u8_rgba(r.color))
+            for overlay in pane.overlays
+            for r in overlay.rects
+        ]
 
         return self._native.render(
             bg         = _BG_COLOR,
@@ -89,4 +96,5 @@ class Rasterizer:
             closes     = closes,
             labels     = labels,
             polylines  = polylines,
+            rects      = rects,
         )

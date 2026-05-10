@@ -22,6 +22,7 @@ from textual.widgets import Footer, Header
 from core.candle import Timeframe
 from core.engine import AppEngine
 from core.engine.pane import EnginePane
+from core.indicators.volume_profile import compute_volume_profile, hvn_overlay
 from core.indicators.vwap import compute_vwap, globex_daily_anchor, vwap_overlay
 
 import native
@@ -176,7 +177,12 @@ class SikapApp(App):
         # is needed.
         result = compute_vwap(pane.candles, anchor=globex_daily_anchor,
                               k_bands=(1.0,))
-        pane.overlays = [vwap_overlay(result)]
+        # HVN bands behind candles. The strategy spec in algorithms.md is
+        # 60/50, but that's the *decision* window for the entry filter —
+        # for visual context we use a wider snapshot so bands cover more
+        # of the visible chart and reveal historical levels.
+        profile = compute_volume_profile(pane.candles, window=500, n_bins=100)
+        pane.overlays = [hvn_overlay(profile), vwap_overlay(result)]
 
     def _on_geometry_changed(self, region) -> None:
         """Layout/size changed. Resize axes geometrically; preserve pan/zoom
